@@ -1,17 +1,14 @@
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
+// Using the native 'gmail' service allows Nodemailer to handle all the 
+// complex TLS/SSL handshakes automatically, preventing port timeouts.
 const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, // true for port 465
+  service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER, 
     pass: process.env.EMAIL_PASS, 
-  },
-  // 🚀 THE MAGIC FIX FOR RENDER
-  // Forces Node to use IPv4 instead of IPv6, bypassing the ENETUNREACH error
-  family: 4 
+  }
 });
 
 const sendBrandEmail = async (to, subject, htmlContent) => {
