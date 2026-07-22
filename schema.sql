@@ -1,18 +1,30 @@
--- 1. Create Enums for Roles and Order Statuses
-CREATE TYPE user_role AS ENUM ('CUSTOMER', 'SUPER_ADMIN', 'VENDOR', 'DRIVER', 'STORE_MANAGER');
-CREATE TYPE order_status AS ENUM ('PENDING', 'PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED');
+-- 1. Create Enums for Roles and Order Statuses (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role') THEN
+        CREATE TYPE user_role AS ENUM ('CUSTOMER', 'SUPER_ADMIN', 'VENDOR', 'DRIVER', 'STORE_MANAGER');
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'order_status') THEN
+        CREATE TYPE order_status AS ENUM ('PENDING', 'PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED');
+    END IF;
+END
+$$;
 
 -- 2. Create Users Table
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     email VARCHAR(255) UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     role user_role DEFAULT 'CUSTOMER',
+    verification_token TEXT,
+    is_verified BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- (The two ALTER TABLE lines have been removed from here)
 -- 3. Create Vendors Table (For email routing)
-CREATE TABLE vendors (
+CREATE TABLE IF NOT EXISTS vendors (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
@@ -21,14 +33,14 @@ CREATE TABLE vendors (
 );
 
 -- 4. Create Categories Table
-CREATE TABLE categories (
+CREATE TABLE IF NOT EXISTS categories (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     slug VARCHAR(255) UNIQUE NOT NULL
 );
 
 -- 5. Create Products Table (Linked to Category and Vendor)
-CREATE TABLE products (
+CREATE TABLE IF NOT EXISTS products (
     id SERIAL PRIMARY KEY,
     category_id INT REFERENCES categories(id) ON DELETE SET NULL,
     vendor_id INT REFERENCES vendors(id) ON DELETE SET NULL,
@@ -41,7 +53,7 @@ CREATE TABLE products (
 );
 
 -- 6. Create Product Images Table (Supports 1 or multiple images per product)
-CREATE TABLE product_images (
+CREATE TABLE IF NOT EXISTS product_images (
     id SERIAL PRIMARY KEY,
     product_id INT REFERENCES products(id) ON DELETE CASCADE,
     image_url TEXT NOT NULL,
@@ -49,7 +61,7 @@ CREATE TABLE product_images (
 );
 
 -- 7. Create Pickup Locations Table (With unique local location fees)
-CREATE TABLE pickup_locations (
+CREATE TABLE IF NOT EXISTS pickup_locations (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     address TEXT NOT NULL,
@@ -57,7 +69,7 @@ CREATE TABLE pickup_locations (
 );
 
 -- 8. Create Orders Table (Linked to Paystack Reference)
-CREATE TABLE orders (
+CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
     user_id INT REFERENCES users(id) ON DELETE SET NULL,
     location_id INT REFERENCES pickup_locations(id) ON DELETE SET NULL,
@@ -68,7 +80,7 @@ CREATE TABLE orders (
 );
 
 -- 9. Create Order Items Table (Logs purchase state and maps items back to vendors)
-CREATE TABLE order_items (
+CREATE TABLE IF NOT EXISTS order_items (
     id SERIAL PRIMARY KEY,
     order_id INT REFERENCES orders(id) ON DELETE CASCADE,
     product_id INT REFERENCES products(id) ON DELETE SET NULL,
@@ -78,7 +90,7 @@ CREATE TABLE order_items (
 );
 
 -- 10. Create Cart Table
-CREATE TABLE cart (
+CREATE TABLE IF NOT EXISTS cart (
     id SERIAL PRIMARY KEY,
     user_id INT REFERENCES users(id) ON DELETE CASCADE,
     product_id INT REFERENCES products(id) ON DELETE CASCADE,
@@ -87,7 +99,7 @@ CREATE TABLE cart (
 );
 
 -- 11. Create Wishlist Table
-CREATE TABLE wishlist (
+CREATE TABLE IF NOT EXISTS wishlist (
     id SERIAL PRIMARY KEY,
     user_id INT REFERENCES users(id) ON DELETE CASCADE,
     product_id INT REFERENCES products(id) ON DELETE CASCADE,
