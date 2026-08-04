@@ -40,8 +40,8 @@ router.post('/register', authLimiter, async (req, res) => {
         [normalizedEmail, passwordHash, 'CUSTOMER', verificationToken]
       );
 
-      const backendUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
-      const verificationUrl = `${backendUrl}/api/auth/verify/${verificationToken}`;
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      const verificationUrl = `${frontendUrl}/verify-email?token=${verificationToken}`;
       const emailHtml = `
         <h2 style="font-family: 'Montserrat', sans-serif; color: #002366;">Welcome to ZIBAH STORES!</h2>
         <p>We are thrilled to have you. Before you can start shopping, please verify your email address by clicking the button below:</p>
@@ -94,7 +94,7 @@ router.get('/verify/:token', async (req, res) => {
       <div style="text-align: center; font-family: sans-serif; padding: 50px;">
         <h1 style="color: #002366;">Email Verified Successfully!</h1>
         <p>You can now log in to ZIBAH STORES.</p>
-        <a href="${loginUrl}" style="display: inline-block; margin-top: 20px; padding: 12px 25px; background-color: #FACF53; color: #002366; text-decoration: none; font-weight: bold; border-radius: 5px;">Go to Login</a>
+        <a href="${loginUrl}" style="display: inline-block; margin-top: 20px; padding: 12px 25px; background-color: #FACF53; color: #002366; text-decoration: none; font-weight: bold; border-radius: 5px;">Go to Store</a>
       </div>
     `);
 
