@@ -34,6 +34,17 @@ app.use('/api/checkout', require('./routes/checkout'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/orders', require('./routes/orders'));
 
+app.get('/verify-email', (req, res) => {
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const token = req.query.token;
+
+  if (!token) {
+    return res.redirect(frontendUrl);
+  }
+
+  return res.redirect(`${frontendUrl}/verify-email?token=${encodeURIComponent(token)}`);
+});
+
 app.use((req, res) => {
   res.status(404).json({ message: 'Route not found' });
 });
