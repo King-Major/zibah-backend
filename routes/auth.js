@@ -30,25 +30,37 @@ router.post('/register', authLimiter, async (req, res) => {
     const passwordHash = await bcrypt.hash(password, salt);
     const verificationToken = crypto.randomBytes(32).toString('hex');
 
-    const newUser = await db.query(
-      `INSERT INTO users (email, password_hash, role, verification_token) 
-       VALUES ($1, $2, $3, $4) RETURNING id, email, role, verification_token`,
-      [normalizedEmail, passwordHash, 'CUSTOMER', verificationToken]
-    );
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify?token=${verificationToken}`;
-    const emailHtml = `
-      <h2 style="font-family: 'Montserrat', sans-serif; color: #002366;">Welcome to ZIBAH STORES!</h2>
-      <p>We are thrilled to have you. Before you can start shopping, please verify your email address by clicking the button below:</p>
-      <a href="${verificationUrl}" style="display: inline-block; margin-top: 15px; padding: 12px 25px; background-color: #FACF53; color: #002366; text-decoration: none; font-weight: bold; border-radius: 5px;">Verify My Email</a>
-      <p style="margin-top: 20px; font-size: 14px; color: #666;">If you did not create this account, please ignore this email.</p>
-    `;
+      const newUser = await client.query(
+        `INSERT INTO users (email, password_hash, role, verification_token) 
+         VALUES ($1, $2, $3, $4) RETURNING id, email, role, verification_token`,
+        [normalizedEmail, passwordHash, 'CUSTOMER', verificationToken]
+      );
 
-    await sendBrandEmail(normalizedEmail, 'Verify your ZIBAH STORES Account', emailHtml);
+      const backendUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
+      const verificationUrl = `${backendUrl}/api/auth/verify/${verificationToken}`;
+      const emailHtml = `
+        <h2 style="font-family: 'Montserrat', sans-serif; color: #002366;">Welcome to ZIBAH STORES!</h2>
+        <p>We are thrilled to have you. Before you can start shopping, please verify your email address by clicking the button below:</p>
+        <a href="${verificationUrl}" style="display: inline-block; margin-top: 15px; padding: 12px 25px; background-color: #FACF53; color: #002366; text-decoration: none; font-weight: bold; border-radius: 5px;">Verify My Email</a>
+        <p style="margin-top: 20px; font-size: 14px; color: #666;">If you did not create this account, please ignore this email.</p>
+      `;
 
-    res.status(201).json({
-      message: 'Registration successful! Please check your email to verify your account before logging in.'
-    });
+      await sendBrandEmail(normalizedEmail, 'Verify your ZIBAH STORES Account', emailHtml);
+      await client.query('COMMIT');
+
+      res.status(201).json({
+        message: 'Registration successful! Please check your email to verify your account before logging in.'
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
 
   } catch (err) {
     console.error(err.message);
@@ -75,10 +87,14 @@ router.get('/verify/:token', async (req, res) => {
       [userResult.rows[0].id]
     );
 
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const loginUrl = `${frontendUrl}`;
+
     res.send(`
       <div style="text-align: center; font-family: sans-serif; padding: 50px;">
         <h1 style="color: #002366;">Email Verified Successfully!</h1>
         <p>You can now log in to ZIBAH STORES.</p>
+        <a href="${loginUrl}" style="display: inline-block; margin-top: 20px; padding: 12px 25px; background-color: #FACF53; color: #002366; text-decoration: none; font-weight: bold; border-radius: 5px;">Go to Login</a>
       </div>
     `);
 
