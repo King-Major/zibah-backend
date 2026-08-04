@@ -16,7 +16,7 @@ This is the backend for the Zibah application. It provides API endpoints for aut
 - PostgreSQL
 - JWT authentication
 - Cloudinary for uploads
-- Nodemailer for emails
+- Resend for emails
 
 ## Installation
 1. Clone the repository

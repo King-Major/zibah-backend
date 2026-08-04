@@ -1,31 +1,36 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 require('dotenv').config();
 
-// Using the native 'gmail' service allows Nodemailer to handle all the 
-// complex TLS/SSL handshakes automatically, preventing port timeouts.
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER, 
-    pass: process.env.EMAIL_PASS, 
-  }
-});
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+
+const getFromAddress = () => {
+  return process.env.RESEND_FROM_EMAIL || process.env.EMAIL_FROM || process.env.EMAIL_USER || 'onboarding@resend.dev';
+};
 
 const sendBrandEmail = async (to, subject, htmlContent) => {
+  if (!resend) {
+    const missingMessage = 'RESEND_API_KEY is not configured. Set it in your environment before sending emails.';
+    console.error(`❌ ${missingMessage}`);
+    throw new Error(missingMessage);
+  }
+
   try {
-    const mailOptions = {
-      from: `"ZIBAH STORES" <${process.env.EMAIL_USER}>`,
+    const { data, error } = await resend.emails.send({
+      from: `"ZIBAH STORES" <${getFromAddress()}>`,
       to,
       subject,
       html: htmlContent,
-    };
+    });
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`Email sent successfully to ${to}: ${info.messageId}`);
-    return info;
+    if (error) {
+      throw new Error(error.message || 'Resend failed to send email');
+    }
+
+    console.log(`Email sent successfully to ${to}: ${data?.id}`);
+    return data;
   } catch (error) {
     console.error(`❌ Error sending email to ${to}:`, error);
-    throw error; 
+    throw error;
   }
 };
 
