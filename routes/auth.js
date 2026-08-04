@@ -40,8 +40,8 @@ router.post('/register', authLimiter, async (req, res) => {
         [normalizedEmail, passwordHash, 'CUSTOMER', verificationToken]
       );
 
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-      const verificationUrl = `${frontendUrl}/verify-email?token=${verificationToken}`;
+      const backendUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
+      const verificationUrl = `${backendUrl}/api/auth/verify/${verificationToken}`;
       const emailHtml = `
         <h2 style="font-family: 'Montserrat', sans-serif; color: #002366;">Welcome to ZIBAH STORES!</h2>
         <p>We are thrilled to have you. Before you can start shopping, please verify your email address by clicking the button below:</p>
