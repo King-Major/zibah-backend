@@ -40,7 +40,7 @@ router.post('/register', authLimiter, async (req, res) => {
         [normalizedEmail, passwordHash, 'CUSTOMER', verificationToken]
       );
 
-      const backendUrl = process.env.FRONTEND_URL || `${req.protocol}://${req.get('host')}`;
+      const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
       const verificationUrl = `${backendUrl}/api/auth/verify/${verificationToken}`;
       const emailHtml = `
         <h2 style="font-family: 'Montserrat', sans-serif; color: #002366;">Welcome to ZIBAH STORES!</h2>
