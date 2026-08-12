@@ -33,6 +33,7 @@ app.use('/api/wishlist', require('./routes/wishlist'));
 app.use('/api/checkout', require('./routes/checkout'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/orders', require('./routes/orders'));
+app.use('/api/feedbacks', require('./routes/feedbacks'));
 
 app.use((req, res) => {
   res.status(404).json({ message: 'Route not found' });

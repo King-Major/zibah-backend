@@ -105,3 +105,14 @@ CREATE TABLE IF NOT EXISTS wishlist (
     product_id INT REFERENCES products(id) ON DELETE CASCADE,
     UNIQUE(user_id, product_id)
 );
+
+-- 12. Create Feedbacks Table (Customer Reviews & Feedback)
+CREATE TABLE IF NOT EXISTS feedbacks (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id) ON DELETE SET NULL,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255),
+    message TEXT NOT NULL,
+    rating INT DEFAULT 5 CHECK (rating >= 1 AND rating <= 5),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
