@@ -1,86 +1,60 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../db');
+const Vendor = require('../models/Vendor');
+const Product = require('../models/Product');
 const { verifyToken, verifyAdmin } = require('../middleware/authMiddleware');
-const { authLimiter } = require('../middleware/security');
+const validateObjectId = require('../middleware/validateObjectId');
+const { serializeVendor } = require('../utils/serializers');
+const { cleanString, isValidEmail } = require('../utils/helpers');
 
-// @route   POST /api/vendors
-// @desc    Add a new vendor (ADMIN ONLY)
-router.post('/', verifyToken, verifyAdmin, authLimiter, async (req, res) => {
-  const { name, email, company_name } = req.body;
+const parseVendorBody = (body) => {
+  const name = cleanString(body.name);
+  const email = cleanString(body.email).toLowerCase();
+  const companyName = cleanString(body.company_name);
+  if (!name || !email || !companyName || !isValidEmail(email)) return null;
+  return { name, email, companyName };
+};
 
-  if (!name || !email || !company_name) {
-    return res.status(400).json({ message: 'Vendor name, email, and company name are required.' });
+// @route   POST /api/vendors  (ADMIN)
+router.post('/', verifyToken, verifyAdmin, async (req, res) => {
+  const data = parseVendorBody(req.body);
+  if (!data) {
+    return res.status(400).json({ message: 'Vendor name, a valid email, and company name are required.' });
   }
 
-  try {
-    const normalizedEmail = String(email).trim().toLowerCase();
-    const newVendor = await db.query(
-      'INSERT INTO vendors (name, email, company_name) VALUES ($1, $2, $3) RETURNING *',
-      [String(name).trim(), normalizedEmail, String(company_name).trim()]
-    );
-    res.status(201).json({
-      message: 'Vendor added successfully',
-      vendor: newVendor.rows[0]
-    });
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error while adding vendor');
-  }
+  const vendor = await Vendor.create(data);
+  res.status(201).json({ message: 'Vendor added successfully', vendor: serializeVendor(vendor) });
 });
 
-// @route   GET /api/vendors
-// @desc    Get all vendors (ADMIN ONLY)
+// @route   GET /api/vendors  (ADMIN)
 router.get('/', verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const vendors = await db.query('SELECT * FROM vendors ORDER BY created_at DESC');
-    res.json(vendors.rows);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error fetching vendors');
-  }
+  const vendors = await Vendor.find().sort({ createdAt: -1 }).lean();
+  res.json(vendors.map(serializeVendor));
 });
 
-
-// @route   PUT /api/vendors/:id
-// @desc    Update a vendor (ADMIN ONLY)
-router.put('/:id', verifyToken, verifyAdmin, async (req, res) => {
-  const { id } = req.params;
-  const { name, email, company_name } = req.body;
-
-  if (!name || !email || !company_name) {
-    return res.status(400).json({ message: 'Vendor name, email, and company name are required.' });
+// @route   PUT /api/vendors/:id  (ADMIN)
+router.put('/:id', verifyToken, verifyAdmin, validateObjectId('id'), async (req, res) => {
+  const data = parseVendorBody(req.body);
+  if (!data) {
+    return res.status(400).json({ message: 'Vendor name, a valid email, and company name are required.' });
   }
 
-  try {
-    const updatedVendor = await db.query(
-      `UPDATE vendors SET name = $1, email = $2, company_name = $3 WHERE id = $4 RETURNING *`,
-      [String(name).trim(), String(email).trim().toLowerCase(), String(company_name).trim(), id]
-    );
+  const vendor = await Vendor.findByIdAndUpdate(req.params.id, data, { new: true, runValidators: true });
+  if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
 
-    if (updatedVendor.rows.length === 0) {
-      return res.status(404).json({ message: 'Vendor not found' });
-    }
-
-    res.json(updatedVendor.rows[0]);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error updating vendor');
-  }
+  res.json(serializeVendor(vendor));
 });
 
-// @route   DELETE /api/vendors/:id
-// @desc    Delete a vendor (ADMIN ONLY)
-router.delete('/:id', verifyToken, verifyAdmin, async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    await db.query(`DELETE FROM vendors WHERE id = $1`, [id]);
-    res.json({ message: 'Vendor deleted successfully' });
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error deleting vendor');
+// @route   DELETE /api/vendors/:id  (ADMIN)
+router.delete('/:id', verifyToken, verifyAdmin, validateObjectId('id'), async (req, res) => {
+  if (await Product.exists({ vendor: req.params.id })) {
+    return res.status(400).json({ message: 'Cannot delete vendor while products are assigned to them. Reassign those products first.' });
   }
+
+  const vendor = await Vendor.findByIdAndDelete(req.params.id);
+  if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
+
+  res.json({ message: 'Vendor deleted successfully' });
 });
 
 module.exports = router;

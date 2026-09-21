@@ -1,35 +1,17 @@
-const { Pool } = require('pg');
-require('dotenv').config();
+const mongoose = require('mongoose');
 
-const pool = new Pool(
-  process.env.DATABASE_URL
-    ? {
-        // If DATABASE_URL exists (which it does on Render), use this:
-        connectionString: process.env.DATABASE_URL,
-        ssl: {
-          rejectUnauthorized: false // CRITICAL: Render requires SSL for cloud connections
-        }
-      }
-    : {
-        // Otherwise, fall back to your local development variables:
-        user: process.env.DB_USER,
-        host: process.env.DB_HOST,
-        database: process.env.DB_DATABASE,
-        password: process.env.DB_PASSWORD,
-        port: process.env.DB_PORT,
-      }
-);
+const connectDB = async () => {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) throw new Error('MONGODB_URI is not set');
 
-pool.on('connect', () => {
-  console.log('Database connected successfully');
-});
+  mongoose.connection.on('error', (err) => console.error('MongoDB error:', err.message));
+  mongoose.connection.on('disconnected', () => console.warn('MongoDB disconnected'));
 
-pool.on('error', (err) => {
-  console.error('Unexpected error on idle database client', err);
-  process.exit(-1);
-});
-
-module.exports = {
-  query: (text, params) => pool.query(text, params),
-  pool,
+  await mongoose.connect(uri, {
+    serverSelectionTimeoutMS: 10000,
+    maxPoolSize: 10,
+  });
+  console.log(`MongoDB connected (${mongoose.connection.name})`);
 };
+
+module.exports = { connectDB };

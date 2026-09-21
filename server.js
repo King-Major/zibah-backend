@@ -1,29 +1,42 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-require('dotenv').config();
+const mongoose = require('mongoose');
+const { connectDB } = require('./db');
 const { generalLimiter } = require('./middleware/security');
+const errorHandler = require('./middleware/errorHandler');
+
+const missing = ['MONGODB_URI', 'JWT_SECRET'].filter((key) => !process.env[key]);
+if (missing.length) {
+  console.error(`Missing required environment variables: ${missing.join(', ')}`);
+  process.exit(1);
+}
 
 const app = express();
 
-app.set('trust proxy', 1);
+if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY));
+app.use(helmet());
 
+const allowedOrigins = (process.env.CORS_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173')
+  .split(',')
+  .map((origin) => origin.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+app.use(cors({ origin: allowedOrigins, credentials: true }));
 
-app.disable('x-powered-by');
-app.use(helmet({
-  contentSecurityPolicy: false,
-  crossOriginResourcePolicy: { policy: 'cross-origin' },
+app.use(express.json({
+  limit: '1mb',
+  verify: (req, res, buffer) => {
+    if (req.originalUrl.startsWith('/api/checkout/webhook')) req.rawBody = buffer;
+  },
 }));
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || '*',
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
-app.use(generalLimiter);
-app.use(express.json({ limit: '100kb' }));
-app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+app.use((req, res, next) => {
+  if (req.body === undefined) req.body = {};
+  next();
+});
+app.use('/api', generalLimiter);
 
-app.get('/health', (req, res) => res.json({ ok: true }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', db: mongoose.connection.readyState === 1 }));
 
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/products', require('./routes/products'));
@@ -31,20 +44,31 @@ app.use('/api/vendors', require('./routes/vendors'));
 app.use('/api/cart', require('./routes/cart'));
 app.use('/api/wishlist', require('./routes/wishlist'));
 app.use('/api/checkout', require('./routes/checkout'));
-app.use('/api/upload', require('./routes/upload'));
 app.use('/api/orders', require('./routes/orders'));
 app.use('/api/feedbacks', require('./routes/feedbacks'));
+app.use('/api/upload', require('./routes/upload'));
 
-app.use((req, res) => {
-  res.status(404).json({ message: 'Route not found' });
-});
-
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(err.status || 500).json({ message: 'Internal server error' });
-});
+app.use((req, res) => res.status(404).json({ message: 'Route not found' }));
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 ZIBAH STORES Backend Running on port ${PORT}`);
+
+const start = async () => {
+  await connectDB();
+  const server = app.listen(PORT, () => console.log(`ZIBAH STORES API running on port ${PORT}`));
+
+  const shutdown = (signal) => {
+    console.log(`${signal} received, shutting down...`);
+    server.close(async () => {
+      await mongoose.connection.close();
+      process.exit(0);
+    });
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+};
+
+start().catch((err) => {
+  console.error('Failed to start server:', err.message);
+  process.exit(1);
 });

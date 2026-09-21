@@ -5,18 +5,13 @@ const { verifyToken, verifyAdmin } = require('../middleware/authMiddleware');
 const { uploadLimiter } = require('../middleware/security');
 
 // @route   POST /api/upload
-// @desc    Upload image to Cloudinary and return URL (ADMIN ONLY)
+// @desc    Upload one image to Cloudinary and return its URL (ADMIN)
 router.post('/', verifyToken, verifyAdmin, uploadLimiter, upload.single('image'), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No image provided' });
-    }
-    // req.file.path contains the secure Cloudinary URL
-    res.json({ imageUrl: req.file.path });
-  } catch (error) {
-    console.error('Upload Error:', error);
-    res.status(500).send('Server error during image upload');
+  if (!req.file) {
+    return res.status(400).json({ message: 'No image provided' });
   }
+  // req.file.path = secure Cloudinary URL, req.file.filename = Cloudinary public_id
+  res.json({ imageUrl: req.file.path, publicId: req.file.filename });
 });
 
 module.exports = router;

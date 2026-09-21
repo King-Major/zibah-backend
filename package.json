@@ -1,11 +1,13 @@
 {
   "name": "zibah-backend",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "2.0.0",
+  "description": "ZIBAH STORES API (Express + MongoDB)",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "seed:admin": "node scripts/seedAdmin.js",
+    "seed:locations": "node scripts/seedLocations.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -23,7 +25,7 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
     "multer-storage-cloudinary": "^4.0.0",
-    "pg": "^8.22.0",
+    "mongoose": "^8.9.5",
     "resend": "^4.0.0"
   },
   "devDependencies": {

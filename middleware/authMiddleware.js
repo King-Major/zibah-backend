@@ -1,23 +1,43 @@
 const jwt = require('jsonwebtoken');
 
-const verifyToken = (req, res, next) => {
+const extractToken = (req) => {
   const authHeader = req.header('Authorization') || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+  return authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+};
 
+const decode = (token) => {
+  const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+  return decoded && typeof decoded === 'object' ? decoded : null;
+};
+
+const verifyToken = (req, res, next) => {
+  const token = extractToken(req);
   if (!token) {
     return res.status(401).json({ message: 'No token provided, authorization denied' });
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'dev-secret');
-    if (!decoded || typeof decoded !== 'object') {
-      return res.status(401).json({ message: 'Token is not valid' });
-    }
+    const decoded = decode(token);
+    if (!decoded) return res.status(401).json({ message: 'Token is not valid' });
     req.user = decoded;
     next();
   } catch (err) {
     res.status(401).json({ message: 'Token is not valid' });
   }
+};
+
+// Attaches req.user if a valid token is present, but never blocks the request
+const optionalAuth = (req, res, next) => {
+  const token = extractToken(req);
+  if (token) {
+    try {
+      const decoded = decode(token);
+      if (decoded) req.user = decoded;
+    } catch (err) {
+      /* ignore invalid token */
+    }
+  }
+  next();
 };
 
 const verifyAdmin = (req, res, next) => {
@@ -27,4 +47,4 @@ const verifyAdmin = (req, res, next) => {
   next();
 };
 
-module.exports = { verifyToken, verifyAdmin };
+module.exports = { verifyToken, verifyAdmin, optionalAuth };

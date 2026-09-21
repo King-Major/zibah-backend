@@ -1,258 +1,191 @@
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
-const axios = require('axios');
-const db = require('../db');
-const { verifyToken } = require('../middleware/authMiddleware');
+const PickupLocation = require('../models/PickupLocation');
+const CartItem = require('../models/CartItem');
+const Order = require('../models/Order');
+const User = require('../models/User');
+const { verifyToken, verifyAdmin } = require('../middleware/authMiddleware');
+const validateObjectId = require('../middleware/validateObjectId');
 const { authLimiter } = require('../middleware/security');
-const { processPostPaymentEmails } = require('../services/orderEmails');
+const { initializePaystackTransaction, confirmPayment, isValidWebhookSignature } = require('../services/payment');
+const { serializeLocation, serializeOrder } = require('../utils/serializers');
+const { isId, cleanString, parseNonNegativeNumber } = require('../utils/helpers');
 
-const parsePositiveNumber = (value) => {
-  const num = Number(value);
-  return Number.isFinite(num) && num > 0 ? num : null;
+const parseLocationBody = (body) => {
+  const name = cleanString(body.name);
+  const address = cleanString(body.address);
+  const addedFee = parseNonNegativeNumber(body.added_fee);
+  if (!name || !address || addedFee === null) return null;
+  return { name, address, addedFee };
 };
-// @route   GET /api/checkout/locations
-// @desc    Get all active pickup locations and their fees
+
+// ==========================================
+// 📍 PICKUP LOCATIONS
+// ==========================================
+
+// @route   GET /api/checkout/locations  (PUBLIC)
 router.get('/locations', async (req, res) => {
-  try {
-    const locations = await db.query('SELECT * FROM pickup_locations ORDER BY added_fee ASC');
-    res.json(locations.rows);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error fetching locations');
-  }
+  const locations = await PickupLocation.find().sort({ addedFee: 1 }).lean();
+  res.json(locations.map(serializeLocation));
 });
 
-// @route   POST /api/checkout/locations
-// @desc    Add a new pickup location (ADMIN ONLY)
-router.post('/locations', verifyToken, async (req, res) => {
-  const { name, address, added_fee } = req.body;
-  const parsedFee = parsePositiveNumber(added_fee);
-
-  if (!name || !address || parsedFee === null) {
+// @route   POST /api/checkout/locations  (ADMIN)
+router.post('/locations', verifyToken, verifyAdmin, async (req, res) => {
+  const data = parseLocationBody(req.body);
+  if (!data) {
     return res.status(400).json({ message: 'Location name, address, and a valid added fee are required.' });
   }
-
-  try {
-    const newLoc = await db.query(
-      `INSERT INTO pickup_locations (name, address, added_fee) VALUES ($1, $2, $3) RETURNING *`,
-      [String(name).trim(), String(address).trim(), parsedFee]
-    );
-    res.json(newLoc.rows[0]);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error adding location');
-  }
+  const location = await PickupLocation.create(data);
+  res.status(201).json(serializeLocation(location));
 });
 
-// @route   PUT /api/checkout/locations/:id
-// @desc    Update a pickup location (ADMIN ONLY)
-router.put('/locations/:id', verifyToken, async (req, res) => {
-  const { id } = req.params;
-  const { name, address, added_fee } = req.body;
-  const parsedFee = parsePositiveNumber(added_fee);
-
-  if (!name || !address || parsedFee === null) {
+// @route   PUT /api/checkout/locations/:id  (ADMIN)
+router.put('/locations/:id', verifyToken, verifyAdmin, validateObjectId('id'), async (req, res) => {
+  const data = parseLocationBody(req.body);
+  if (!data) {
     return res.status(400).json({ message: 'Location name, address, and a valid added fee are required.' });
   }
-
-  try {
-    const updatedLoc = await db.query(
-      `UPDATE pickup_locations SET name = $1, address = $2, added_fee = $3 WHERE id = $4 RETURNING *`,
-      [String(name).trim(), String(address).trim(), parsedFee, id]
-    );
-    if (updatedLoc.rows.length === 0) return res.status(404).json({ message: 'Location not found' });
-    res.json(updatedLoc.rows[0]);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error updating location');
-  }
+  const location = await PickupLocation.findByIdAndUpdate(req.params.id, data, { new: true, runValidators: true });
+  if (!location) return res.status(404).json({ message: 'Location not found' });
+  res.json(serializeLocation(location));
 });
 
-// @route   DELETE /api/checkout/locations/:id
-// @desc    Delete a pickup location (ADMIN ONLY)
-router.delete('/locations/:id', verifyToken, async (req, res) => {
-  const { id } = req.params;
-  try {
-    await db.query(`DELETE FROM pickup_locations WHERE id = $1`, [id]);
-    res.json({ message: 'Location deleted successfully' });
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error deleting location');
-  }
+// @route   DELETE /api/checkout/locations/:id  (ADMIN)
+router.delete('/locations/:id', verifyToken, verifyAdmin, validateObjectId('id'), async (req, res) => {
+  await PickupLocation.findByIdAndDelete(req.params.id);
+  res.json({ message: 'Location deleted successfully' });
 });
+
+// ==========================================
+// 💳 PAYMENT
+// ==========================================
 
 // @route   POST /api/checkout/initialize
-// @desc    Calculate total, create order, and get Paystack payment link
+// @desc    Price the cart on the server, create a PENDING order, get a Paystack link
 router.post('/initialize', verifyToken, authLimiter, async (req, res) => {
   const { location_id } = req.body;
-  const user_id = req.user.id;
-
-  if (!location_id) {
+  if (!isId(location_id)) {
     return res.status(400).json({ message: 'A valid pickup location is required.' });
   }
 
+  const [user, location, cartItems] = await Promise.all([
+    User.findById(req.user.id).select('email'),
+    PickupLocation.findById(location_id),
+    CartItem.find({ user: req.user.id }).populate('product'),
+  ]);
+
+  if (!user) return res.status(401).json({ message: 'Account no longer exists.' });
+  if (!location) return res.status(400).json({ message: 'Invalid pickup location' });
+
+  const liveItems = cartItems.filter((ci) => ci.product); // ignore products deleted after being carted
+  if (liveItems.length === 0) return res.status(400).json({ message: 'Cart is empty' });
+
+  // Build order items from DB prices (never from the client) and check stock
+  const orderItems = [];
+  let subtotalKobo = 0;
+  for (const ci of liveItems) {
+    const p = ci.product;
+    if (!p.isDigital && p.stock < ci.quantity) {
+      return res.status(400).json({
+        message: p.stock > 0 ? `Only ${p.stock} of "${p.name}" left in stock.` : `"${p.name}" is out of stock.`,
+      });
+    }
+    const primary = p.images.find((i) => i.isPrimary) || p.images[0];
+    subtotalKobo += Math.round(p.price * 100) * ci.quantity;
+    orderItems.push({
+      product: p._id,
+      vendor: p.vendor || null,
+      name: p.name,
+      isDigital: p.isDigital,
+      quantity: ci.quantity,
+      priceAtPurchase: p.price,
+      image: primary ? primary.url : null,
+    });
+  }
+
+  const deliveryKobo = Math.round(location.addedFee * 100);
+  const totalKobo = subtotalKobo + deliveryKobo; // integer maths avoids float drift
+  const reference = `ZIB-${crypto.randomBytes(10).toString('hex')}`;
+
+  // Create the order first so the webhook can always find it
+  const order = await Order.create({
+    user: user._id,
+    location: location._id,
+    locationSnapshot: { name: location.name, address: location.address, addedFee: location.addedFee },
+    items: orderItems,
+    subtotal: subtotalKobo / 100,
+    deliveryFee: deliveryKobo / 100,
+    totalAmount: totalKobo / 100,
+    status: 'PENDING',
+    paystackRef: reference,
+  });
+
   try {
-    // 1. Fetch user email for Paystack
-    const userRes = await db.query('SELECT email FROM users WHERE id = $1', [user_id]);
-    const email = userRes.rows[0].email;
-
-    // 2. Fetch the cart and calculate the subtotal
-    const cartRes = await db.query(`
-      SELECT c.quantity, p.id as product_id, p.price, p.vendor_id 
-      FROM cart c
-      JOIN products p ON c.product_id = p.id
-      WHERE c.user_id = $1
-    `, [user_id]);
-
-    if (cartRes.rows.length === 0) {
-      return res.status(400).json({ message: 'Cart is empty' });
-    }
-
-    let subtotal = 0;
-    cartRes.rows.forEach(item => {
-      subtotal += (parseFloat(item.price) * item.quantity);
+    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const tx = await initializePaystackTransaction({
+      email: user.email,
+      amount: totalKobo, // Paystack expects kobo
+      currency: 'NGN',
+      reference,
+      callback_url: `${frontendUrl}/verify`,
+      metadata: { order_id: String(order._id) },
     });
 
-    // 3. Fetch the location fee
-    const locationRes = await db.query('SELECT added_fee FROM pickup_locations WHERE id = $1', [location_id]);
-    if (locationRes.rows.length === 0) {
-      return res.status(400).json({ message: 'Invalid pickup location' });
-    }
-    const deliveryFee = parseFloat(locationRes.rows[0].added_fee);
-
-    // 4. Calculate Final Total (Amount to charge)
-    const finalTotal = subtotal + deliveryFee;
-
-    // 5. Initialize transaction with Paystack (Amount must be in kobo, so * 100)
-    const paystackAmount = Math.round(finalTotal * 100); 
-    
-    const paystackResponse = await axios.post(
-      'https://api.paystack.co/transaction/initialize',
-      {
-        email: email,
-        amount: paystackAmount,
-        callback_url: 'http://localhost:5173/verify', // Your React frontend URL
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-
-    const { authorization_url, reference } = paystackResponse.data.data;
-
-    // 6. Create the Order in the database as 'PENDING'
-    const orderRes = await db.query(
-      `INSERT INTO orders (user_id, location_id, total_amount, status, paystack_ref) 
-       VALUES ($1, $2, $3, 'PENDING', $4) RETURNING id`,
-      [user_id, location_id, finalTotal, reference]
-    );
-    const orderId = orderRes.rows[0].id;
-
-    // 7. Move items from Cart to Order Items
-    const orderItemsQueries = cartRes.rows.map(item => {
-      return db.query(
-        `INSERT INTO order_items (order_id, product_id, vendor_id, quantity, price_at_purchase) 
-         VALUES ($1, $2, $3, $4, $5)`,
-        [orderId, item.product_id, item.vendor_id, item.quantity, item.price]
-      );
-    });
-    await Promise.all(orderItemsQueries);
-
-    // 8. Clear the user's cart
-    await db.query('DELETE FROM cart WHERE user_id = $1', [user_id]);
-
-    // 9. Send the payment link back to the React frontend
     res.json({
       message: 'Checkout initialized successfully',
-      authorization_url,
+      authorization_url: tx.authorization_url,
       reference,
-      order_id: orderId
+      order_id: order.id,
     });
-
   } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error during checkout initialization');
+    await Order.deleteOne({ _id: order._id });
+    console.error('Paystack initialize failed:', err.response?.data || err.message);
+    res.status(502).json({ message: 'Could not start the payment. Please try again.' });
   }
 });
 
 // @route   POST /api/checkout/verify
-// @desc    Verify payment with Paystack and update order status
+// @desc    Called by the frontend after Paystack redirects back
 router.post('/verify', verifyToken, authLimiter, async (req, res) => {
-  const { reference } = req.body;
-
+  const reference = cleanString(req.body.reference);
   if (!reference) {
     return res.status(400).json({ message: 'A payment reference is required.' });
   }
 
-  try {
-    // 1. Ask Paystack if the transaction was successful
-    const verifyResponse = await axios.get(
-      `https://api.paystack.co/transaction/verify/${reference}`,
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-        },
-      }
-    );
+  // Users may only verify their OWN orders
+  const owned = await Order.exists({ paystackRef: reference, user: req.user.id });
+  if (!owned) return res.status(404).json({ message: 'No order found for this payment reference.' });
 
-    const paystackData = verifyResponse.data.data;
-
-  if (paystackData.status === 'success') {
-      // 2. Update the order status to PAID
-      const updatedOrder = await db.query(
-        `UPDATE orders SET status = 'PAID' WHERE paystack_ref = $1 RETURNING *`,
-        [reference]
-      );
-      
-      const order = updatedOrder.rows[0];
-
-      // 3. Fetch customer email to send the download links
-      const userRes = await db.query('SELECT email FROM users WHERE id = $1', [order.user_id]);
-      const customerEmail = userRes.rows[0].email;
-
-      // 4. FIRE THE AUTOMATED EMAIL WEBHOOK (Runs asynchronously in the background)
-      processPostPaymentEmails(order.id, customerEmail);
-
-      res.json({ 
-        message: 'Payment successful, order confirmed.',
-        order: order
-      });
-    } else {
-      // If payment failed or is abandoned
-      res.status(400).json({ message: 'Payment verification failed or is incomplete' });
-    }
-
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error verifying payment');
+  const { paid, order } = await confirmPayment(reference);
+  if (!paid) {
+    return res.status(400).json({ message: 'Payment verification failed or is incomplete' });
   }
+
+  res.json({
+    message: 'Payment successful, order confirmed.',
+    order: serializeOrder(order.toObject()),
+  });
 });
 
+// @route   POST /api/checkout/webhook
+// @desc    Paystack server-to-server notification (set this URL in the Paystack dashboard).
+//          Confirms orders even if the customer closes the tab before the redirect.
+router.post('/webhook', async (req, res) => {
+  if (!isValidWebhookSignature(req.rawBody, req.header('x-paystack-signature'))) {
+    return res.sendStatus(401);
+  }
 
-// TEMPORARY ROUTE: GET /api/checkout/seed-locations
-// router.get('/seed-locations', async (req, res) => {
-//   try {
-//     await db.query('TRUNCATE TABLE pickup_locations RESTART IDENTITY CASCADE');
-    
-//     const query = `
-//       INSERT INTO pickup_locations (name, address, added_fee) VALUES
-//       ('Within UNILAG', 'University of Lagos Campus Area', 300.00),
-//       ('Within YABATECH', 'Yaba College of Technology Campus Area', 300.00),
-//       ('Abule Oja', 'Abule Oja and Environs', 600.00),
-//       ('Chemist & Pako', 'Chemist / Pako Bus Stop Area', 1000.00),
-//       ('Bariga', 'Bariga and Environs', 1200.00),
-//       ('Shomolu', 'Shomolu and Environs', 1500.00)
-//     `;
-    
-//     await db.query(query);
-//     res.json({ message: 'Real locations successfully seeded!' });
-//   } catch (err) {
-//     console.error(err);
-//     res.status(500).send('Error seeding locations');
-//   }
-// });
+  const event = req.body;
+  if (event?.event === 'charge.success' && typeof event.data?.reference === 'string') {
+    try {
+      await confirmPayment(event.data.reference);
+    } catch (err) {
+      console.error('Webhook processing failed:', err.message);
+      return res.sendStatus(500); // non-2xx => Paystack retries
+    }
+  }
+  res.sendStatus(200);
+});
 
 module.exports = router;

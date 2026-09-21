@@ -1,333 +1,217 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../db');
+const Product = require('../models/Product');
+const Category = require('../models/Category');
+const Vendor = require('../models/Vendor');
+const CartItem = require('../models/CartItem');
+const WishlistItem = require('../models/WishlistItem');
 const { verifyToken, verifyAdmin } = require('../middleware/authMiddleware');
+const validateObjectId = require('../middleware/validateObjectId');
 const { uploadLimiter } = require('../middleware/security');
-const { upload } = require('../utils/cloudinary.js');
+const { upload, deleteCloudinaryImages, deleteUploadedFiles } = require('../utils/cloudinary');
+const { serializeCategory, serializeProduct } = require('../utils/serializers');
+const { isId, cleanString, parsePositiveNumber, parseNonNegativeInt } = require('../utils/helpers');
 
-const parsePositiveNumber = (value) => {
-  const num = Number(value);
-  return Number.isFinite(num) && num > 0 ? num : null;
+// Multipart forms sometimes send '', 'null' or 'undefined' for empty selects
+const normalizeRef = (v) => (v === undefined || v === null || v === '' || v === 'null' || v === 'undefined' ? null : v);
+
+// Validates + normalises the product form fields shared by create & update
+const parseProductBody = async (body) => {
+  const name = cleanString(body.name);
+  const description = cleanString(body.description);
+  const price = parsePositiveNumber(body.price);
+  const stock = parseNonNegativeInt(body.stock);
+  const category = normalizeRef(body.category_id);
+  const vendor = normalizeRef(body.vendor_id);
+  const isDigital = body.is_digital === true || body.is_digital === 'true';
+
+  if (!name || !description || price === null || stock === null) {
+    return { error: 'Name, description, a valid price and a valid stock quantity are required.' };
+  }
+  if (category !== null && (!isId(category) || !(await Category.exists({ _id: category })))) {
+    return { error: 'Selected category does not exist.' };
+  }
+  if (vendor !== null && (!isId(vendor) || !(await Vendor.exists({ _id: vendor })))) {
+    return { error: 'Selected vendor does not exist.' };
+  }
+  return { data: { name, description, price, stock, isDigital, category, vendor } };
 };
+
+const toImages = (files = []) => files.map((f) => ({ url: f.path, publicId: f.filename, isPrimary: false }));
 
 // ==========================================
 // 🗂️ CATEGORY ENDPOINTS
 // ==========================================
 
-// @route   POST /api/products/categories
-// @desc    Create a new product category (ADMIN ONLY)
+// @route   POST /api/products/categories  (ADMIN)
 router.post('/categories', verifyToken, verifyAdmin, async (req, res) => {
-  const { name, slug } = req.body;
+  const name = cleanString(req.body.name);
+  const slug = cleanString(req.body.slug).toLowerCase();
 
   if (!name || !slug) {
     return res.status(400).json({ message: 'Category name and slug are required.' });
   }
 
-  try {
-    const newCategory = await db.query(
-      'INSERT INTO categories (name, slug) VALUES ($1, $2) RETURNING *',
-      [String(name).trim(), String(slug).trim().toLowerCase()]
-    );
-    res.status(201).json(newCategory.rows[0]);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).json({ message: 'Server error while creating category' });
-  }
+  const category = await Category.create({ name, slug });
+  res.status(201).json(serializeCategory(category));
 });
 
-// @route   GET /api/products/categories
-// @desc    Get all categories (PUBLIC - For store navigation)
+// @route   GET /api/products/categories  (PUBLIC)
 router.get('/categories', async (req, res) => {
-  try {
-    const categories = await db.query('SELECT * FROM categories ORDER BY name ASC');
-    res.json(categories.rows);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error fetching categories');
-  }
+  const categories = await Category.find().sort({ name: 1 }).lean();
+  res.json(categories.map(serializeCategory));
 });
 
-// @route   PUT /api/products/categories/:id
-// @desc    Update a category (ADMIN ONLY)
-router.put('/categories/:id', verifyToken, verifyAdmin, async (req, res) => {
-  const { id } = req.params;
-  const { name, slug } = req.body;
+// @route   PUT /api/products/categories/:id  (ADMIN)
+router.put('/categories/:id', verifyToken, verifyAdmin, validateObjectId('id'), async (req, res) => {
+  const name = cleanString(req.body.name);
+  const slug = cleanString(req.body.slug).toLowerCase();
 
   if (!name || !slug) {
     return res.status(400).json({ message: 'Category name and slug are required.' });
   }
 
-  try {
-    const updatedCategory = await db.query(
-      `UPDATE categories SET name = $1, slug = $2 WHERE id = $3 RETURNING *`,
-      [String(name).trim(), String(slug).trim().toLowerCase(), id]
-    );
+  const category = await Category.findByIdAndUpdate(req.params.id, { name, slug }, { new: true, runValidators: true });
+  if (!category) return res.status(404).json({ message: 'Category not found' });
 
-    if (updatedCategory.rows.length === 0) {
-      return res.status(404).json({ message: 'Category not found' });
-    }
-
-    res.json(updatedCategory.rows[0]);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error updating category');
-  }
+  res.json(serializeCategory(category));
 });
 
-// @route   DELETE /api/products/categories/:id
-// @desc    Delete a category (ADMIN ONLY)
-router.delete('/categories/:id', verifyToken, verifyAdmin, async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const deletedCategory = await db.query(
-      `DELETE FROM categories WHERE id = $1 RETURNING *`,
-      [id]
-    );
-
-    if (deletedCategory.rows.length === 0) {
-      return res.status(404).json({ message: 'Category not found' });
-    }
-
-    res.json({ message: 'Category deleted successfully' });
-  } catch (err) {
-    console.error(err.message);
-    // If it fails due to foreign key constraints (products existing in this category)
-    if (err.code === '23503') {
-      return res.status(400).json({ message: 'Cannot delete category because it contains products.' });
-    }
-    res.status(500).send('Server error deleting category');
+// @route   DELETE /api/products/categories/:id  (ADMIN)
+router.delete('/categories/:id', verifyToken, verifyAdmin, validateObjectId('id'), async (req, res) => {
+  // Mongo has no foreign keys, so enforce the "category must be empty" rule here
+  if (await Product.exists({ category: req.params.id })) {
+    return res.status(400).json({ message: 'Cannot delete category because it contains products.' });
   }
+
+  const deleted = await Category.findByIdAndDelete(req.params.id);
+  if (!deleted) return res.status(404).json({ message: 'Category not found' });
+
+  res.json({ message: 'Category deleted successfully' });
 });
 
-// @route   GET /api/products/category/:slug
-// @desc    Get all products for a specific category using its slug (PUBLIC)
+// @route   GET /api/products/category/:slug  (PUBLIC)
 router.get('/category/:slug', async (req, res) => {
-  const { slug } = req.params;
+  const category = await Category.findOne({ slug: cleanString(req.params.slug).toLowerCase() }).lean();
+  if (!category) return res.json({ categoryName: 'Category', products: [] });
 
-  try {
-    const queryText = `
-      SELECT p.*, c.name as category_name, c.slug as category_slug, pi.image_url as primary_image
-      FROM products p
-      JOIN categories c ON p.category_id = c.id
-      LEFT JOIN product_images pi ON p.id = pi.product_id AND pi.is_primary = true
-      WHERE c.slug = $1
-      ORDER BY p.created_at DESC
-    `;
-    
-    const productsRes = await db.query(queryText, [slug.toLowerCase()]);
-    
-    // We send back the products, plus the name of the category for the page title
-    res.json({
-      categoryName: productsRes.rows.length > 0 ? productsRes.rows[0].category_name : 'Category',
-      products: productsRes.rows
-    });
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error fetching category products');
-  }
-});
+  const products = await Product.find({ category: category._id })
+    .populate('category', 'name slug')
+    .sort({ createdAt: -1 })
+    .lean();
 
-// ==========================================
-// 📦 PRODUCT ENDPOINTS
-// ==========================================
-
-// @route   POST /api/products
-// @desc    Upload a new product with multiple images via Cloudinary (ADMIN ONLY)
-router.post('/', verifyToken, verifyAdmin, uploadLimiter, upload.array('productImages', 10), async (req, res) => {
-  const { name, description, price, stock, is_digital } = req.body;
-  const category_id = req.body.category_id || null;
-  const vendor_id = req.body.vendor_id || null;
-  const isDigitalBool = is_digital === 'true' || is_digital === true;
-  const parsedPrice = parsePositiveNumber(price);
-  const parsedStock = parsePositiveNumber(stock);
-
-  if (!name || !description || parsedPrice === null || parsedStock === null) {
-    return res.status(400).json({ message: 'Name, description, price, and stock are required.' });
-  }
-
-  try {
-    const productResult = await db.query(
-      `INSERT INTO products (category_id, vendor_id, name, description, price, stock, is_digital) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [category_id, vendor_id, String(name).trim(), String(description).trim(), parsedPrice, parsedStock, isDigitalBool]
-    );
-    
-    const newProduct = productResult.rows[0];
-
-    // 2. Handle Cloudinary image insertions if files were uploaded
-    if (req.files && req.files.length > 0) {
-      const imageQueries = req.files.map((file, index) => {
-        // Set the first uploaded image as the primary display image
-        const isPrimary = index === 0; 
-        return db.query(
-          'INSERT INTO product_images (product_id, image_url, is_primary) VALUES ($1, $2, $3)',
-          [newProduct.id, file.path, isPrimary] // file.path contains the secure Cloudinary URL
-        );
-      });
-      
-      await Promise.all(imageQueries);
-    }
-
-    res.status(201).json({
-      message: 'Product successfully uploaded',
-      product: newProduct
-    });
-
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error during product upload');
-  }
-});
-
-// @route   GET /api/products
-// @desc    Get all products with their primary images (PUBLIC - Showcase storefront)
-router.get('/', async (req, res) => {
-  try {
-    const queryText = `
-      SELECT p.*, c.name as category_name, pi.image_url as primary_image
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      LEFT JOIN product_images pi ON p.id = pi.product_id AND pi.is_primary = true
-      ORDER BY p.created_at DESC
-    `;
-    const products = await db.query(queryText);
-    res.json(products.rows);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error fetching products');
-  }
-});
-
-// @route   PUT /api/products/:id
-// @desc    Update a product's details and append new images (ADMIN ONLY)
-router.put('/:id', verifyToken, verifyAdmin, uploadLimiter, upload.array('productImages', 10), async (req, res) => {
-  const { id } = req.params;
-  const { name, description, price, stock, is_digital } = req.body;
-  const category_id = req.body.category_id || null;
-  const vendor_id = req.body.vendor_id || null;
-  const isDigitalBool = is_digital === 'true' || is_digital === true;
-  const parsedPrice = parsePositiveNumber(price);
-  const parsedStock = parsePositiveNumber(stock);
-
-  if (!name || !description || parsedPrice === null || parsedStock === null) {
-    return res.status(400).json({ message: 'Name, description, price, and stock are required.' });
-  }
-
-  try {
-    const updatedProduct = await db.query(
-      `UPDATE products 
-       SET name = $1, description = $2, price = $3, stock = $4, category_id = $5, vendor_id = $6, is_digital = $7
-       WHERE id = $8 RETURNING *`,
-      [String(name).trim(), String(description).trim(), parsedPrice, parsedStock, category_id, vendor_id, isDigitalBool, id]
-    );
-
-    if (updatedProduct.rows.length === 0) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-
-    // 2. Process NEW images added to the gallery
-    if (req.files && req.files.length > 0) {
-      const primaryCheck = await db.query(
-        'SELECT id FROM product_images WHERE product_id = $1 AND is_primary = true',
-        [id]
-      );
-      const hasPrimary = primaryCheck.rows.length > 0;
-
-      const imageQueries = req.files.map((file, index) => {
-        const isPrimary = !hasPrimary && index === 0; 
-        return db.query(
-          `INSERT INTO product_images (product_id, image_url, is_primary) 
-           VALUES ($1, $2, $3)`,
-          [id, file.path, isPrimary]
-        );
-      });
-
-      await Promise.all(imageQueries);
-    }
-
-    res.json(updatedProduct.rows[0]);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error updating product');
-  }
-});
-
-// @route   DELETE /api/products/:id
-// @desc    Delete a product (ADMIN ONLY)
-router.delete('/:id', verifyToken, verifyAdmin, async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    await db.query(`DELETE FROM products WHERE id = $1`, [id]);
-    res.json({ message: 'Product deleted successfully' });
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error deleting product');
-  }
-});
-
-// @route   GET /api/products/:id
-// @desc    Get a single product with all its images and vendor details (PUBLIC)
-router.get('/:id', async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const queryText = `
-      SELECT 
-        p.*, 
-        c.name as category_name, 
-        v.name as vendor_name,
-        COALESCE(
-          json_agg(
-            json_build_object('id', pi.id, 'url', pi.image_url, 'is_primary', pi.is_primary)
-          ) FILTER (WHERE pi.id IS NOT NULL), '[]'
-        ) as images
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      LEFT JOIN vendors v ON p.vendor_id = v.id
-      LEFT JOIN product_images pi ON p.id = pi.product_id
-      WHERE p.id = $1
-      GROUP BY p.id, c.name, v.name
-    `;
-
-    const productRes = await db.query(queryText, [id]);
-
-    if (productRes.rows.length === 0) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-
-    res.json(productRes.rows[0]);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error fetching product details');
-  }
+  res.json({ categoryName: category.name, products: products.map((p) => serializeProduct(p)) });
 });
 
 // ==========================================
 // 🖼️ IMAGE DELETION ENDPOINT
 // ==========================================
 
-// @route   DELETE /api/products/images/:image_id
-// @desc    Delete a specific image from a product's gallery (ADMIN ONLY)
-router.delete('/images/:image_id', verifyToken, verifyAdmin, async (req, res) => {
-  const { image_id } = req.params;
+// @route   DELETE /api/products/images/:image_id  (ADMIN)
+router.delete('/images/:image_id', verifyToken, verifyAdmin, validateObjectId('image_id'), async (req, res) => {
+  const product = await Product.findOne({ 'images._id': req.params.image_id });
+  if (!product) return res.status(404).json({ message: 'Image not found' });
 
+  const image = product.images.id(req.params.image_id);
+  const publicId = image.publicId;
+
+  product.images.pull(req.params.image_id);
+  product.ensurePrimaryImage(); // promote another image if the primary was removed
+  await product.save();
+  await deleteCloudinaryImages([publicId]);
+
+  res.json({ message: 'Image successfully removed from gallery' });
+});
+
+// ==========================================
+// 📦 PRODUCT ENDPOINTS
+// ==========================================
+
+// @route   POST /api/products  (ADMIN)
+router.post('/', verifyToken, verifyAdmin, uploadLimiter, upload.array('productImages', 10), async (req, res) => {
   try {
-    const deleteRes = await db.query(
-      'DELETE FROM product_images WHERE id = $1 RETURNING *',
-      [image_id]
-    );
-
-    if (deleteRes.rows.length === 0) {
-      return res.status(404).json({ message: 'Image not found' });
+    const { error, data } = await parseProductBody(req.body);
+    if (error) {
+      await deleteUploadedFiles(req.files);
+      return res.status(400).json({ message: error });
     }
 
-    res.json({ message: 'Image successfully removed from gallery' });
+    const product = new Product({ ...data, images: toImages(req.files) });
+    product.ensurePrimaryImage(); // first uploaded image becomes primary
+    await product.save();
+    await product.populate('category', 'name slug');
+
+    res.status(201).json({
+      message: 'Product successfully uploaded',
+      product: serializeProduct(product.toObject()),
+    });
   } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error removing image');
+    await deleteUploadedFiles(req.files);
+    throw err;
   }
+});
+
+// @route   GET /api/products  (PUBLIC)
+router.get('/', async (req, res) => {
+  const products = await Product.find()
+    .populate('category', 'name slug')
+    .sort({ createdAt: -1 })
+    .lean();
+  res.json(products.map((p) => serializeProduct(p)));
+});
+
+// @route   GET /api/products/:id  (PUBLIC)
+router.get('/:id', validateObjectId('id'), async (req, res) => {
+  const product = await Product.findById(req.params.id)
+    .populate('category', 'name slug')
+    .populate('vendor', 'name')
+    .lean();
+
+  if (!product) return res.status(404).json({ message: 'Product not found' });
+  res.json(serializeProduct(product, { detailed: true }));
+});
+
+// @route   PUT /api/products/:id  (ADMIN) – updates fields and APPENDS new images
+router.put('/:id', verifyToken, verifyAdmin, validateObjectId('id'), uploadLimiter, upload.array('productImages', 10), async (req, res) => {
+  try {
+    const { error, data } = await parseProductBody(req.body);
+    if (error) {
+      await deleteUploadedFiles(req.files);
+      return res.status(400).json({ message: error });
+    }
+
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+      await deleteUploadedFiles(req.files);
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    product.set(data);
+    toImages(req.files).forEach((img) => product.images.push(img));
+    product.ensurePrimaryImage();
+    await product.save();
+    await product.populate('category', 'name slug');
+
+    res.json(serializeProduct(product.toObject()));
+  } catch (err) {
+    await deleteUploadedFiles(req.files);
+    throw err;
+  }
+});
+
+// @route   DELETE /api/products/:id  (ADMIN)
+router.delete('/:id', verifyToken, verifyAdmin, validateObjectId('id'), async (req, res) => {
+  const product = await Product.findByIdAndDelete(req.params.id);
+  if (!product) return res.status(404).json({ message: 'Product not found' });
+
+  // Clean up everything that pointed at the product (old orders keep their own snapshot)
+  await Promise.all([
+    CartItem.deleteMany({ product: product._id }),
+    WishlistItem.deleteMany({ product: product._id }),
+    deleteCloudinaryImages(product.images.map((i) => i.publicId)),
+  ]);
+
+  res.json({ message: 'Product deleted successfully' });
 });
 
 module.exports = router;
