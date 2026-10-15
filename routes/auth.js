@@ -41,8 +41,13 @@ const resultPage = (title, message, { ok }) => {
 
 // @route   POST /api/auth/register
 router.post('/register', authLimiter, async (req, res) => {
+  const name = cleanString(req.body.name);
   const email = cleanString(req.body.email).toLowerCase();
   const { password } = req.body;
+
+  if (!name || name.length > 100) {
+    return res.status(400).json({ message: 'Please provide your name (up to 100 characters).' });
+  }
 
   if (!isValidEmail(email) || !isValidPassword(password)) {
     return res.status(400).json({ message: 'Please provide a valid email and a password with at least 8 characters and no spaces.' });
@@ -58,7 +63,7 @@ router.post('/register', authLimiter, async (req, res) => {
   let user;
   try {
     user = await User.create({
-      email, passwordHash, role: 'CUSTOMER',
+      name, email, passwordHash, role: 'CUSTOMER',
       verificationTokenHash: hash, verificationExpires: expires,
     });
   } catch (err) {

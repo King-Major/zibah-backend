@@ -9,7 +9,7 @@ const primaryImage = (images) => {
   return primary ? primary.url : null;
 };
 
-const serializeUser = (u) => ({ id: idOf(u), email: u.email, role: u.role });
+const serializeUser = (u) => ({ id: idOf(u), name: u.name || '', email: u.email, role: u.role });
 
 const serializeCategory = (c) => ({
   id: idOf(c), name: c.name, slug: c.slug, created_at: c.createdAt,

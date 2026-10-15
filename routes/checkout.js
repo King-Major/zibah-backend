@@ -70,7 +70,7 @@ router.post('/initialize', verifyToken, authLimiter, async (req, res) => {
   }
 
   const [user, location, cartItems] = await Promise.all([
-    User.findById(req.user.id).select('email'),
+    User.findById(req.user.id).select('name email'),
     PickupLocation.findById(location_id),
     CartItem.find({ user: req.user.id }).populate('product'),
   ]);
@@ -129,7 +129,17 @@ router.post('/initialize', verifyToken, authLimiter, async (req, res) => {
       currency: 'NGN',
       reference,
       callback_url: `${frontendUrl}/verify`,
-      metadata: { order_id: String(order._id) },
+      metadata: {
+        order_id: String(order._id),
+        ...(user.name
+          ? {
+              customer_name: user.name,
+              custom_fields: [
+                { display_name: 'Customer Name', variable_name: 'customer_name', value: user.name },
+              ],
+            }
+          : {}),
+      },
     });
 
     res.json({
