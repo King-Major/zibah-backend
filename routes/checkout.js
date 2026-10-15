@@ -70,7 +70,7 @@ router.post('/initialize', verifyToken, authLimiter, async (req, res) => {
   }
 
   const [user, location, cartItems] = await Promise.all([
-    User.findById(req.user.id).select('name email'),
+    User.findById(req.user.id).select('name whatsappNumber email'),
     PickupLocation.findById(location_id),
     CartItem.find({ user: req.user.id }).populate('product'),
   ]);
@@ -123,6 +123,18 @@ router.post('/initialize', verifyToken, authLimiter, async (req, res) => {
 
   try {
     const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const customerFields = [];
+    if (user.name) {
+      customerFields.push({ display_name: 'Customer Name', variable_name: 'customer_name', value: user.name });
+    }
+    if (user.whatsappNumber) {
+      customerFields.push({
+        display_name: 'WhatsApp Number',
+        variable_name: 'whatsapp_number',
+        value: user.whatsappNumber,
+      });
+    }
+
     const tx = await initializePaystackTransaction({
       email: user.email,
       amount: totalKobo, // Paystack expects kobo
@@ -131,14 +143,9 @@ router.post('/initialize', verifyToken, authLimiter, async (req, res) => {
       callback_url: `${frontendUrl}/verify`,
       metadata: {
         order_id: String(order._id),
-        ...(user.name
-          ? {
-              customer_name: user.name,
-              custom_fields: [
-                { display_name: 'Customer Name', variable_name: 'customer_name', value: user.name },
-              ],
-            }
-          : {}),
+        ...(user.name ? { customer_name: user.name } : {}),
+        ...(user.whatsappNumber ? { whatsapp_number: user.whatsappNumber } : {}),
+        ...(customerFields.length > 0 ? { custom_fields: customerFields } : {}),
       },
     });
 

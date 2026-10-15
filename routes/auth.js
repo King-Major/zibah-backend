@@ -42,11 +42,22 @@ const resultPage = (title, message, { ok }) => {
 // @route   POST /api/auth/register
 router.post('/register', authLimiter, async (req, res) => {
   const name = cleanString(req.body.name);
+  const whatsappNumber = cleanString(req.body.whatsappNumber);
   const email = cleanString(req.body.email).toLowerCase();
   const { password } = req.body;
 
   if (!name || name.length > 100) {
     return res.status(400).json({ message: 'Please provide your name (up to 100 characters).' });
+  }
+
+  const phoneDigits = whatsappNumber.replace(/\D/g, '');
+  if (
+    whatsappNumber.length > 20 ||
+    !/^\+?[\d\s().-]+$/.test(whatsappNumber) ||
+    phoneDigits.length < 7 ||
+    phoneDigits.length > 15
+  ) {
+    return res.status(400).json({ message: 'Please provide a valid WhatsApp number, including its country code.' });
   }
 
   if (!isValidEmail(email) || !isValidPassword(password)) {
@@ -63,7 +74,7 @@ router.post('/register', authLimiter, async (req, res) => {
   let user;
   try {
     user = await User.create({
-      name, email, passwordHash, role: 'CUSTOMER',
+      name, whatsappNumber, email, passwordHash, role: 'CUSTOMER',
       verificationTokenHash: hash, verificationExpires: expires,
     });
   } catch (err) {
