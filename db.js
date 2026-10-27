@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const CartItem = require('./models/CartItem');
 
 const connectDB = async () => {
   const uri = process.env.MONGODB_URI;
@@ -11,6 +12,16 @@ const connectDB = async () => {
     serverSelectionTimeoutMS: 10000,
     maxPoolSize: 10,
   });
+  await CartItem.collection.createIndex(
+    { user: 1, product: 1, color: 1, size: 1 },
+    { unique: true }
+  );
+  const indexes = await CartItem.collection.indexes();
+  const legacyIndex = indexes.find((index) =>
+    index.unique && index.key.user === 1 && index.key.product === 1 &&
+    Object.keys(index.key).length === 2
+  );
+  if (legacyIndex) await CartItem.collection.dropIndex(legacyIndex.name);
   console.log(`MongoDB connected (${mongoose.connection.name})`);
 };
 

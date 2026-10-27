@@ -81,18 +81,37 @@ router.post('/initialize', verifyToken, authLimiter, async (req, res) => {
   const liveItems = cartItems.filter((ci) => ci.product); // ignore products deleted after being carted
   if (liveItems.length === 0) return res.status(400).json({ message: 'Cart is empty' });
 
+  const submittedChoices = Array.isArray(req.body.cartItems) ? req.body.cartItems : [];
+  if (submittedChoices.some((choice) => !choice || !isId(choice.cart_id) || typeof choice.boxed !== 'boolean')) {
+    return res.status(400).json({ message: 'Invalid boxing selection.' });
+  }
+  const boxingChoices = new Map(submittedChoices.map((choice) => [choice.cart_id, choice.boxed]));
+  if (submittedChoices.length !== boxingChoices.size || submittedChoices.some((choice) =>
+    !liveItems.some((item) => String(item._id) === choice.cart_id)
+  )) {
+    return res.status(400).json({ message: 'Invalid cart item in boxing selection.' });
+  }
+
   // Build order items from DB prices (never from the client) and check stock
   const orderItems = [];
   let subtotalKobo = 0;
   for (const ci of liveItems) {
     const p = ci.product;
+    if ((p.colors.length && !p.colors.includes(ci.color)) || (p.sizes.length && !p.sizes.includes(ci.size))) {
+      return res.status(400).json({ message: `Please update the color or size selection for "${p.name}".` });
+    }
+    const boxed = boxingChoices.get(String(ci._id)) === true;
+    if (boxed && !(p.boxPrice > 0)) {
+      return res.status(400).json({ message: `Boxing is not available for "${p.name}".` });
+    }
     if (!p.isDigital && p.stock < ci.quantity) {
       return res.status(400).json({
         message: p.stock > 0 ? `Only ${p.stock} of "${p.name}" left in stock.` : `"${p.name}" is out of stock.`,
       });
     }
     const primary = p.images.find((i) => i.isPrimary) || p.images[0];
-    subtotalKobo += Math.round(p.price * 100) * ci.quantity;
+    const boxPriceAtPurchase = boxed ? p.boxPrice : 0;
+    subtotalKobo += Math.round(p.price * 100) * ci.quantity + Math.round(boxPriceAtPurchase * 100) * ci.quantity;
     orderItems.push({
       product: p._id,
       vendor: p.vendor || null,
@@ -100,6 +119,10 @@ router.post('/initialize', verifyToken, authLimiter, async (req, res) => {
       isDigital: p.isDigital,
       quantity: ci.quantity,
       priceAtPurchase: p.price,
+      color: ci.color || '',
+      size: ci.size || '',
+      boxed,
+      boxPriceAtPurchase,
       image: primary ? primary.url : null,
     });
   }

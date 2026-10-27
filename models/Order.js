@@ -16,6 +16,10 @@ const orderItemSchema = new mongoose.Schema(
     isDigital: { type: Boolean, default: false },
     quantity: { type: Number, required: true, min: 1 },
     priceAtPurchase: { type: Number, required: true, min: 0 },
+    color: { type: String, default: '' },
+    size: { type: String, default: '' },
+    boxed: { type: Boolean, default: false },
+    boxPriceAtPurchase: { type: Number, default: 0, min: 0 },
     image: { type: String, default: null },
   },
   { _id: false }

@@ -33,7 +33,11 @@ const serializeProduct = (p, { detailed = false } = {}) => {
     name: p.name,
     description: p.description,
     price: p.price,
+    compare_at_price: p.compareAtPrice ?? null,
     stock: p.stock,
+    colors: p.colors || [],
+    sizes: p.sizes || [],
+    box_price: p.boxPrice || 0,
     is_digital: p.isDigital,
     created_at: p.createdAt,
     category_name: category ? category.name : null,
@@ -48,11 +52,16 @@ const serializeProduct = (p, { detailed = false } = {}) => {
 };
 
 const serializeCartItem = (ci) => ({
-  id: idOf(ci.product), // product id (the frontend keys the cart by product)
+  id: idOf(ci),
   cart_id: idOf(ci),
+  product_id: idOf(ci.product),
   quantity: ci.quantity,
+  color: ci.color || '',
+  size: ci.size || '',
   name: ci.product.name,
   price: ci.product.price,
+  compare_at_price: ci.product.compareAtPrice ?? null,
+  box_price: ci.product.boxPrice || 0,
   primary_image: primaryImage(ci.product.images),
 });
 
@@ -82,6 +91,10 @@ const serializeOrder = (o) => ({
     name: i.name,
     quantity: i.quantity,
     price_at_purchase: i.priceAtPurchase,
+    color: i.color || '',
+    size: i.size || '',
+    boxed: !!i.boxed,
+    box_price_at_purchase: i.boxPriceAtPurchase || 0,
     is_digital: i.isDigital,
     primary_image: i.image || null,
   })),

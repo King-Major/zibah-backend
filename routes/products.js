@@ -15,17 +15,40 @@ const { isId, cleanString, parsePositiveNumber, parseNonNegativeInt } = require(
 // Multipart forms sometimes send '', 'null' or 'undefined' for empty selects
 const normalizeRef = (v) => (v === undefined || v === null || v === '' || v === 'null' || v === 'undefined' ? null : v);
 
+const parseStringList = (value) => {
+  if (value === undefined || value === null || value === '') return [];
+  let values = value;
+  if (typeof value === 'string') {
+    try {
+      values = JSON.parse(value);
+    } catch {
+      values = value.split(',');
+    }
+  }
+  if (!Array.isArray(values)) return null;
+  const cleaned = [...new Set(values.map((item) => cleanString(item)).filter(Boolean))];
+  return cleaned.length <= 40 && cleaned.every((item) => item.length <= 40) ? cleaned : null;
+};
+
 // Validates + normalises the product form fields shared by create & update
 const parseProductBody = async (body) => {
   const name = cleanString(body.name);
   const description = cleanString(body.description);
   const price = parsePositiveNumber(body.price);
   const stock = parseNonNegativeInt(body.stock);
+  const colors = parseStringList(body.colors);
+  const sizes = parseStringList(body.sizes);
+  const boxPrice = parseNonNegativeNumber(body.box_price ?? 0);
+  const compareAtPrice = body.compare_at_price === undefined || body.compare_at_price === ''
+    ? null
+    : parseNonNegativeNumber(body.compare_at_price);
   const category = normalizeRef(body.category_id);
   const vendor = normalizeRef(body.vendor_id);
   const isDigital = body.is_digital === true || body.is_digital === 'true';
 
-  if (!name || !description || price === null || stock === null) {
+  if (!name || !description || price === null || stock === null || colors === null || sizes === null || boxPrice === null ||
+    (body.compare_at_price !== undefined && body.compare_at_price !== '' && compareAtPrice === null) ||
+    (compareAtPrice !== null && compareAtPrice <= price)) {
     return { error: 'Name, description, a valid price and a valid stock quantity are required.' };
   }
   if (category !== null && (!isId(category) || !(await Category.exists({ _id: category })))) {
@@ -34,7 +57,7 @@ const parseProductBody = async (body) => {
   if (vendor !== null && (!isId(vendor) || !(await Vendor.exists({ _id: vendor })))) {
     return { error: 'Selected vendor does not exist.' };
   }
-  return { data: { name, description, price, stock, isDigital, category, vendor } };
+  return { data: { name, description, price, compareAtPrice, stock, colors, sizes, boxPrice, isDigital, category, vendor } };
 };
 
 const toImages = (files = []) => files.map((f) => ({ url: f.path, publicId: f.filename, isPrimary: false }));
