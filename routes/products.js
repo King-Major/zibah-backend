@@ -10,7 +10,7 @@ const validateObjectId = require('../middleware/validateObjectId');
 const { uploadLimiter } = require('../middleware/security');
 const { upload, deleteCloudinaryImages, deleteUploadedFiles } = require('../utils/cloudinary');
 const { serializeCategory, serializeProduct } = require('../utils/serializers');
-const { isId, cleanString, parsePositiveNumber, parseNonNegativeInt } = require('../utils/helpers');
+const { isId, cleanString, parsePositiveNumber, parseNonNegativeNumber, parseNonNegativeInt } = require('../utils/helpers');
 
 // Multipart forms sometimes send '', 'null' or 'undefined' for empty selects
 const normalizeRef = (v) => (v === undefined || v === null || v === '' || v === 'null' || v === 'undefined' ? null : v);
